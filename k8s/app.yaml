@@ -1,0 +1,26 @@
+# Applied out-of-band (kubectl apply -f k8s/app.yaml), not part of the
+# kustomization it points at — same arrangement as gws-mcp, fiken-mcp and ssb-mcp.
+#
+# targetRevision is `main` on our fork. Upstream changes only reach the cluster
+# when someone merges upstream/main into it *and* runs `make ship`, since the
+# image tag in k8s/kustomization.yaml is what actually moves.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: m365-mcp
+  namespace: kube-argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:Floka-as/ms-365-mcp-server.git
+    path: k8s
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mcphub
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true

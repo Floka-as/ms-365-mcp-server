@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: m365-mcp
+  namespace: mcphub
+  labels:
+    app: m365-mcp
+spec:
+  # Stateless: StreamableHTTPServerTransport runs with sessionIdGenerator
+  # undefined, so every POST /mcp is self-contained and carries its own bearer.
+  # Nothing is pinned to a pod, so replicas and RollingUpdate are both safe —
+  # unlike gws-mcp, which has an attachment spool on an emptyDir.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: m365-mcp
+  template:
+    metadata:
+      labels:
+        app: m365-mcp
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: m365-mcp
+          image: m365-mcp:latest
+          # ENTRYPOINT is `node dist/index.js`, so flags go in args.
+          #
+          # --org-mode is not optional here. Endpoints that carry only
+          # `workScopes` and no personal `scopes` — every SharePoint site, drive
+          # and list tool — are dropped without it (graph-tools.ts:1506), which
+          # would silently remove one of the three surfaces the customer asked
+          # for while everything still looked healthy.
+          args:
+            - "--http"
+            - "3000"
+            - "--org-mode"
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            # The tool ceiling for every tenant on this host. See
+            # k8s/gen-tool-filter.mjs for what is in it and why.
+            - name: ENABLED_TOOLS
+              valueFrom:
+                configMapKeyRef:
+                  name: m365-mcp-tools
+                  key: ENABLED_TOOLS
+            # Resource server only. Solvei owns the Entra authorization-code
+            # flow — its own registered redirect URI, its own MCPServerConnection
+            # rows, its own refresh inside a 60s margin — and hands the ADK a
+            # Graph-audienced access token, which arrives here as
+            # `Authorization: Bearer eyJ…`. The middleware forwards it to Graph
+            # untouched (server.ts:737), so this pod mints nothing, exchanges
+            # nothing (no --obo) and stores nothing.
+            #
+            # Consequences worth keeping in view:
+            #   - No MS365_MCP_CLIENT_ID / _SECRET / _TENANT_ID. Those only feed
+            #     the built-in OAuth proxy, and the ingress does not route it.
+            #     So there is no per-customer state here at all: one pod serves
+            #     every tenant, and customer number two is a Solvei admin form
+            #     rather than a deploy.
+            #   - The bearer is checked for expiry and nothing else — no
+            #     audience, no tenant, no signature (lib/microsoft-auth.ts:136).
+            #     Graph is the only enforcement point. Deliberate: the endpoint
+            #     is public and anyone may bring their own Microsoft token and
+            #     act as themselves within their own consented scopes.
+            #
+            # Per-IP rate limiting must stay off. Solvei reaches this host over
+            # the public internet and back in through the same cluster's
+            # ingress, so every tenant's traffic arrives from one NAT address
+            # and would share a single 120/min bucket — customer A throttling
+            # customer B with nothing in the logs to say so. The ingress carries
+            # a generous global limit instead.
+            - name: MS365_MCP_RATE_LIMIT_DISABLED
+              value: "true"
+            # Everything the process would otherwise write under $HOME. In HTTP
+            # mode the MSAL token cache is skipped entirely, so this is only the
+            # log directory.
+            - name: HOME
+              value: /data
+            - name: MS365_MCP_LOG_DIR
+              value: /data/logs
+            - name: NODE_ENV
+              value: production
+          readinessProbe:
+            httpGet:
+              # There is no /health — `/` returns a plain-text banner
+              # (server.ts:762). Probes are in-cluster, so it does not need to
+              # be routed publicly.
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              # 326 endpoints' worth of JSON Schema is built per MCP server
+              # instance, and a fresh instance is created per request.
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mcphub
+
+# No OnePasswordItem, unlike every other app here: this pod holds no
+# credentials. Solvei runs the Entra authorization-code flow and sends the
+# resulting Graph token as a bearer, so there is nothing to sync.
+resources:
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+
+# `make ship` bumps newTag to the pushed commit; ArgoCD syncs from main.
+images:
+  - name: m365-mcp:latest
+    newName: europe-north1-docker.pkg.dev/solvr-multitenant/internal-artifacts/m365-mcp
+    newTag: "latest"

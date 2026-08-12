@@ -1,0 +1,55 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: m365-mcp
+  namespace: mcphub
+  labels:
+    app: m365-mcp
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Long tool calls stream; the default 60s proxy read timeout would cut them.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # The only rate limit in the system: the server's own per-IP limiter is off
+    # (see deployment.yaml). Not for metering — Solvei and the pod logs handle
+    # that — but so a stranger's runaway loop cannot turn this host into a free
+    # Graph relay. Set high enough that Solvei's traffic, which all arrives from
+    # the cluster's single NAT address, never approaches it.
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - m365.mcphub.no
+      secretName: m365-mcphub-no-tls
+  rules:
+    - host: m365.mcphub.no
+      http:
+        paths:
+          # /mcp and nothing else.
+          #
+          # Deliberately not routed, and the reasoning differs per path:
+          #
+          #   /authorize, /token, /register — the built-in Entra proxy. Unused:
+          #     Solvei points at login.microsoftonline.com directly and arrives
+          #     here holding the finished token.
+          #
+          #   /.well-known — this one matters. mcpAuthRouter builds
+          #     protected-resource metadata from issuerUrl, so it advertises
+          #     m365.mcphub.no *itself* as the authorization server. Routed
+          #     without the three paths above, a spec-compliant client that is
+          #     not Solvei would discover an authorization server whose
+          #     endpoints 404 — a broken flow rather than a clean 401. gws-mcp
+          #     can route its equivalent because it advertises Google; this
+          #     server points at itself. Route all four together or none.
+          #
+          #   / — the plain-text banner the probes use. No reason to publish it.
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: m365-mcp
+                port:
+                  number: 3000

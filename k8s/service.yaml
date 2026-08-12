@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: m365-mcp
+  namespace: mcphub
+  labels:
+    app: m365-mcp
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: m365-mcp
