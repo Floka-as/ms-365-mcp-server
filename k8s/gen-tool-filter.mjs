@@ -41,7 +41,12 @@ for (const endpoint of endpoints) {
 // Utility tools live in graph-tools.ts, not endpoints.json, so they carry no
 // preset tags and every filter drops them — including the downloaders that the
 // drive tools' own llmTips tell the model to call.
-for (const tool of ['download-bytes', 'download-bytes-to-file', 'get-download-url', 'graph-batch']) {
+//
+// download-bytes-to-file is deliberately absent: it writes bytes to a local
+// absolute path, which only means anything in stdio mode, and the server does
+// not register it over HTTP. Listing it here would put a tool in the ConfigMap
+// that never appears in tools/list.
+for (const tool of ['download-bytes', 'get-download-url', 'graph-batch']) {
   names.add(tool);
 }
 
