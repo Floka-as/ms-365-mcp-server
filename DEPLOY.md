@@ -79,37 +79,133 @@ issues, checked at the ingress — which is also what per-customer metering will
 need. That requires a small Solvei change, since `authorization_code` rows
 collapse to a single `Authorization` header today with no room for a second.
 
-## Onboarding a customer
+## The shared Entra app
 
-Everything hard is in the customer's tenant, and none of it touches this repo.
+One multi-tenant app registration in Floka's tenant serves every customer —
+the same arrangement the Google connector already uses, where one OAuth client
+from 1Password is shared across orgs. Customers do not register anything.
 
-1. **App registration** in their tenant, **Web** platform (Solvei holds a client
-   secret), redirect URI copied verbatim from
-   `GET /api/v1/mcp-connections/servers/oauth-redirect-uri` — that is the field
-   most often typed wrong.
-2. **Delegated Graph permissions + admin consent.** `User.Read`, `Mail.Read`,
-   `Calendars.Read`, `Sites.Read.All`, `Files.Read.All`, `offline_access` — plus
-   `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`, `Files.ReadWrite.All`,
-   `Sites.ReadWrite.All` if the agent should act rather than only read. The pod
-   does not decide this; consent does.
-3. **`offline_access` is not optional.** Without a refresh token
+### One-time, in Floka's tenant
+
+1. **App registration**, sign-in audience **Accounts in any organizational
+   directory** (`AzureADMultipleOrgs`). Personal Microsoft accounts are not
+   wanted: every tool here is work-account territory, and `--org-mode` assumes
+   it.
+2. **Platform: Web**, with the Solvei prod callback as redirect URI:
+
+   ```
+   https://solvei-api.floka.no/api/v1/mcp-connections/oauth/callback/
+   ```
+
+   Trailing slash included — Entra matches exactly. Add
+   `https://solvei-api-dev.floka.no/api/v1/mcp-connections/oauth/callback/` too
+   if customers will trial against dev.
+
+   The route is `oauth/callback/` (`apps/mcp_connections/urls.py`) under
+   `api/v1/mcp-connections/`, and only `solvei-api.floka.no` reaches the
+   backend — `solvei.floka.no` is the frontend. Confirm against
+   `GET /api/v1/mcp-connections/servers/oauth-redirect-uri` rather than
+   retyping, since Solvei derives the string from the request host unless
+   `MCP_OAUTH_REDIRECT_URI` is pinned.
+3. **Delegated Graph permissions.** Read-only baseline: `User.Read`,
+   `Mail.Read`, `Calendars.Read`, `Files.Read.All`, `Sites.Read.All`, plus
+   `offline_access`. Add `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
+   `Files.ReadWrite.All`, `Sites.ReadWrite.All` only if the agent should act.
+   The pod does not decide this; consent does.
+4. **Client secret**, stored in 1Password alongside the Google one and pasted
+   into each org's Solvei row.
+5. **Publisher verification.** Without it the consent screen shows an
+   unverified-app warning, which is exactly the wrong first impression for a
+   dialog asking an admin to hand over tenant-wide mail access.
+
+### Per customer
+
+1. **Admin consent** — one link, one click by their tenant admin:
+
+   ```
+   https://login.microsoftonline.com/{customer-tenant-id}/adminconsent?client_id={floka-app-id}
+   ```
+
+   This is not extra friction: `Sites.Read.All` and `Files.Read.All` require
+   admin consent whoever owns the app.
+
+2. **Solvei MCPServer row**, in their org:
+
+   | Field | Value |
+   | ----- | ----- |
+   | Transport | `streamable_http` |
+   | URL | `https://m365.mcphub.no/mcp` |
+   | Auth type | `authorization_code` |
+   | Authorize | `https://login.microsoftonline.com/{customer-tenant-id}/oauth2/v2.0/authorize` |
+   | Token | `https://login.microsoftonline.com/{customer-tenant-id}/oauth2/v2.0/token` |
+   | Client id / secret | the shared Floka app's |
+   | `extra_authorize_params` | `{}` |
+   | `tool_filter` | `[]`, or a subset of the 126 |
+   | `is_trusted` | see below |
+
+   **Pin the tenant id; do not use `/organizations/` or `/common/`.** The app
+   accepts any tenant, but a tenant-pinned URL means this row can only ever
+   mint tokens for this customer — the blast-radius property of a
+   single-tenant app, kept alongside the convenience of a shared one.
+
+   **Scopes** — fully qualify the Graph ones so the token is guaranteed
+   `aud=graph.microsoft.com`, which is exactly what the pass-through depends on.
+   `offline_access` is an OIDC scope and must stay bare:
+
+   ```
+   offline_access
+   https://graph.microsoft.com/User.Read
+   https://graph.microsoft.com/Mail.Read
+   https://graph.microsoft.com/Calendars.Read
+   https://graph.microsoft.com/Files.Read.All
+   https://graph.microsoft.com/Sites.Read.All
+   ```
+
+   **`offline_access` is not optional.** Without a refresh token
    `ensure_access_token` returns `None` and the tools silently vanish from the
    agent an hour after the user connects. Entra issues one whenever
    `offline_access` is in scope, so unlike the Google case
    `extra_authorize_params` stays `{}`.
-4. **Solvei MCPServer row**, per org:
-   - transport `streamable_http`, url `https://m365.mcphub.no/mcp`
-   - auth type `authorization_code`
-   - authorize `https://login.microsoftonline.com/{tenant-id}/oauth2/v2.0/authorize`
-   - token `https://login.microsoftonline.com/{tenant-id}/oauth2/v2.0/token`
-   - the tenant's own id, not `common` — that restricts consent to their org
-   - `tool_filter` if this customer should see less than the full 126
-5. **Conditional Access.** Solvei's callback is a web app from a datacenter IP.
+
+3. **Conditional Access.** Solvei's callback is a web app from a datacenter IP.
    Device-compliance or location policies in the customer's tenant will bite
    here, and it is better to find that out in week one.
 
-Consent is **per user** — each member connects from `/settings/profile`. There
-is no org-wide flip.
+Consent is then **per user** — each member connects from `/settings/profile`.
+There is no org-wide flip; admin consent authorizes the app, it does not
+connect anybody.
+
+### `is_trusted` is the read/write decision in disguise
+
+It defaults to `false`, meaning every tool call goes through human approval.
+
+- **Read-only scopes + `is_trusted: true`** — no approval fatigue across 126
+  tools, and the agent structurally cannot act. The recommended phase one.
+- **Write scopes + `is_trusted: false`** — the agent can draft and send, but
+  the user confirms each call.
+- **Write scopes + `is_trusted: true`** — the agent sends mail as the user,
+  unattended. Do not start here.
+
+### Rotating the shared app
+
+`MCPServer` is a `TenantBaseModel` and the serializer requires
+`oauth_client_id`/`oauth_client_secret` per row, so one app today means the same
+credentials in N rows. A first-class platform connector — one row Floka owns,
+orgs opt into — is the clean shape, and a Solvei feature rather than a blocker.
+
+Until then:
+
+- **Rotating the secret** touches N rows but breaks nothing. Only
+  `oauth_client_id`, `oauth_token_url` and `oauth_authorize_url` are
+  `_APP_IDENTITY_FIELDS`.
+- **Changing the client id** deliberately drops every existing connection on
+  that row, so every user reconnects. That is intended — it fails loudly at
+  configuration time instead of silently at 09:00 the next morning — but do not
+  discover it by accident.
+
+A customer who insists on owning the registration is still supportable: point
+their row at their own app. Nothing in the per-row design assumes the shared
+one.
 
 ## The tool ceiling
 
