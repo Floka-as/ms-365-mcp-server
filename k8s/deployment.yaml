@@ -39,10 +39,19 @@ spec:
           # and list tool — are dropped without it (graph-tools.ts:1506), which
           # would silently remove one of the three surfaces the customer asked
           # for while everything still looked healthy.
+          #
+          # -v is what puts logs on stdout. Without it winston only has file
+          # transports (logger.ts:68) — everything would land in the emptyDir,
+          # invisible to `kubectl logs` and Cloud Logging and discarded on
+          # restart, which is also where per-customer usage has to be read from
+          # until mcphub issues its own credential. It raises no log level;
+          # LOG_LEVEL still governs that. PII redaction stays on by default, so
+          # bearer tokens and addresses are scrubbed before they reach stdout.
           args:
             - "--http"
             - "3000"
             - "--org-mode"
+            - "-v"
           ports:
             - containerPort: 3000
               name: http
