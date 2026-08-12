@@ -16,4 +16,4 @@ resources:
 images:
   - name: m365-mcp:latest
     newName: europe-north1-docker.pkg.dev/solvr-multitenant/internal-artifacts/m365-mcp
-    newTag: "latest"
+    newTag: "48cb186"
