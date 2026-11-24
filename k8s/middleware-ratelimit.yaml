@@ -1,0 +1,20 @@
+# Per-client-IP rate limit for m365.mcphub.no, referenced from ingress.yaml.
+# Same envelope as the old ingress-nginx limit (limit-rps 50, burst
+# multiplier 5). Set high enough that Solvei's traffic, which all arrives from
+# the cluster's single NAT address, never approaches it. Over the limit,
+# Traefik answers 429 (ingress-nginx answered 503).
+#
+# Keyed on the client IP: Traefik's Service uses externalTrafficPolicy: Local,
+# so the remote address is the real client, not a node.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: m365-ratelimit
+  namespace: mcphub
+  labels:
+    app: m365-mcp
+spec:
+  rateLimit:
+    average: 50
+    period: 1s
+    burst: 250
