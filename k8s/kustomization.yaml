@@ -11,6 +11,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - ingress.yaml
+  - middleware-ratelimit.yaml
 
 # `make ship` bumps newTag to the pushed commit; ArgoCD syncs from main.
 images:
